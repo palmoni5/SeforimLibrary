@@ -12,7 +12,11 @@ internal object SefariaImportTuning {
 internal data class BookMeta(
     val isBaseBook: Boolean,
     val categoryLevel: Int,
-    val priorityRank: Int?
+    val priorityRank: Int?,
+    // ספר-יסוד קנוני (תנ"ך/משנה/תלמוד/תוספתא/הלכה) — בניגוד למפרש שבמקרה נמצא
+    // ברשימת ה-priority (למשל מפרשי מדרש). משמש למניעת סיווג שגוי של הקבלה בין
+    // שני ספרי-יסוד כ"פירוש".
+    val isCanonicalBaseBook: Boolean = false
 )
 
 internal data class BookPayload(

@@ -268,6 +268,13 @@ internal fun resolveDirectionalConnectionTypesForMeta(
         return baseType to baseType
     }
 
+    // שני ספרי-יסוד קנוניים (תנ"ך/משנה/תלמוד/תוספתא/הלכה) המקושרים ב-
+    // COMMENTARY/TARGUM הם הקבלה או ציטוט הדדי — לא יחס מפרש-בסיס. מסווגים
+    // כ-OTHER כדי שלא יופיעו תחת "מפרשים" (למשל משנה תורה המצטט את הירושלמי).
+    if (sourceMeta.isCanonicalBaseBook && targetMeta.isCanonicalBaseBook) {
+        return ConnectionType.OTHER to ConnectionType.OTHER
+    }
+
     fun typesFor(sourceIsSecondary: Boolean): Pair<ConnectionType, ConnectionType> {
         return when (baseType) {
             ConnectionType.COMMENTARY ->

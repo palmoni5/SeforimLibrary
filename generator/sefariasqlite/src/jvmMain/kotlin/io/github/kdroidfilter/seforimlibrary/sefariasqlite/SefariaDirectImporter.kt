@@ -213,6 +213,8 @@ class SefariaDirectImporter(
                 ?: bookOrders[sanitizeFolder(payload.heTitle)])?.toFloat() ?: 999f
             val normalizedPath = normalizedBookPath(payload.categoriesHe, payload.heTitle)
             val isBaseBook = normalizedPath in baseBookKeys
+            val isCanonicalBaseBook =
+                isBaseBook && isCanonicalBaseCategory(payload.categoriesHe)
 
             // Detect teamim and nekudot in book lines
             val (hasTeamim, hasNekudot) = detectTeamimAndNekudot(payload.lines)
@@ -264,7 +266,8 @@ class SefariaDirectImporter(
             bookMetaById[bookId] = BookMeta(
                 isBaseBook = book.isBaseBook,
                 categoryLevel = catLevel,
-                priorityRank = priorityRank
+                priorityRank = priorityRank,
+                isCanonicalBaseBook = isCanonicalBaseBook
             )
 
             val refsForBook = payload.refEntries.map { it.copy(path = bookPath) }

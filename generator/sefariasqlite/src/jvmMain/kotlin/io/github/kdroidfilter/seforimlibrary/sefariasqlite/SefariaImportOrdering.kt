@@ -146,6 +146,25 @@ internal fun flattenTalmudCategories(parts: List<String>): List<String> {
 internal fun normalizedBookPath(categories: List<String>, heTitle: String): String =
     (categories.map { sanitizeFolder(it) } + sanitizeFolder(heTitle)).joinToString("/")
 
+// קטגוריות-שורש של ספרי-יסוד קנוניים. ההשוואה דרך normalizeTitleKey כדי
+// לנטרל הבדלי גרשיים (למשל תנ"ך מול תנך) בין categoriesHe לקבוע כאן.
+private val CANONICAL_BASE_CATEGORY_KEYS: Set<String> =
+    setOf("תנך", "משנה", "תלמוד בבלי", "תלמוד ירושלמי", "תוספתא", "הלכה")
+        .mapNotNull { normalizeTitleKey(it) }
+        .toSet()
+
+private val MIDRASH_CATEGORY_KEY: String? = normalizeTitleKey("מדרש")
+
+/// מחזיר האם קטגוריות הספר מציינות ספר-יסוד קנוני (תנ"ך/משנה/תלמוד/תוספתא/
+/// הלכה). קטגוריית "מדרש" מחריגה את הספר — גם מדרשי-הלכה (ספרא/מכילתא/ספרי)
+/// שיושבים תחת "מדרש/הלכה", וגם מפרשיהם — כדי לא לסווג בטעות פירוש אמיתי
+/// כ-OTHER. ראה resolveDirectionalConnectionTypesForMeta.
+internal fun isCanonicalBaseCategory(categoriesHe: List<String>): Boolean {
+    val keys = categoriesHe.mapNotNull { normalizeTitleKey(it) }
+    if (MIDRASH_CATEGORY_KEY != null && MIDRASH_CATEGORY_KEY in keys) return false
+    return keys.any { it in CANONICAL_BASE_CATEGORY_KEYS }
+}
+
 internal fun buildBookPath(categories: List<String>, title: String): String =
     (categories + title).joinToString(separator = "/")
 
