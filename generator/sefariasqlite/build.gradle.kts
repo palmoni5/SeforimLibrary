@@ -62,8 +62,16 @@ tasks.register<JavaExec>("generateSefariaSqlite") {
     if (project.hasProperty("persistDb")) {
         systemProperty("persistDb", project.property("persistDb") as String)
     }
-    if (project.hasProperty("inMemoryDb")) {
-        systemProperty("inMemoryDb", project.property("inMemoryDb") as String)
+    // In-memory DB makes the Sefaria import dramatically faster (it avoids the
+    // per-row disk journaling that dominates the on-disk build). It can be
+    // controlled independently of the global -PinMemoryDb via -PsefariaInMemoryDb,
+    // so CI can run *this* step in memory for speed while keeping the heavier
+    // Lucene step reading from disk to stay within the runner's RAM budget.
+    // Resolution order: -PsefariaInMemoryDb → -PinMemoryDb → entrypoint default.
+    val sefariaInMemory = (project.findProperty("sefariaInMemoryDb") as String?)
+        ?: (project.findProperty("inMemoryDb") as String?)
+    if (sefariaInMemory != null) {
+        systemProperty("inMemoryDb", sefariaInMemory)
     }
 
     // Optional JVM tuning (similar to generator)

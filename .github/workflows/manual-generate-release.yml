@@ -59,6 +59,23 @@ jobs:
           docker-images: false
           swap-storage: false
 
+      # The 16 GB runner has no headroom for the peak of the Lucene index
+      # step (8 GB generator fork heap + native/Panama buffers + the Gradle
+      # process), so it gets OOM-killed — surfacing as "The operation was
+      # canceled". A large swapfile turns that hard kill into a (rarely hit,
+      # because swappiness is low) spillover, letting the job finish. The
+      # free-disk-space step above leaves ~25 GB on /mnt for the swapfile.
+      - name: Add swap headroom (prevents OOM-kill on the 16 GB runner)
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 20G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=20480
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          sudo sysctl vm.swappiness=10
+          free -h
+          swapon --show
+
       - name: Bridle daemon heaps + generator forks for the 16 GB runner
         run: |
           mkdir -p ~/.gradle
@@ -142,18 +159,22 @@ jobs:
           ls -lh build/seforim.db.buildstate
 
       # ─── Build seforim.db (full pipeline) ──────────────────────────────────
-      # -PinMemoryDb=false: the Lucene index step otherwise copies the entire
-      # ~7 GB seforim.db into a SQLite mode=memory database to speed up reads.
-      # On the 16 GB runner that native footprint plus the 8 GB generator heap
-      # blows past physical RAM and the kernel OOM-kills the job (surfacing as
-      # "The operation was canceled"). Reading the DB from disk keeps the peak
-      # bounded; the indexing stays well within budget.
+      # Memory strategy on the 16 GB runner, tuned per-step:
+      #   -PinMemoryDb=false       Keep the heavy steps (Lucene index, Otzaria
+      #                            append) reading the ~7 GB DB from disk so the
+      #                            8 GB generator fork doesn't blow past RAM.
+      #   -PsefariaInMemoryDb=true Run ONLY the Sefaria import in memory. On disk
+      #                            its per-row journaling dominates wall-clock
+      #                            (~1 h); in memory it is far faster, and its
+      #                            working set fits in RAM + the swap headroom
+      #                            added above.
       - name: Generate Seforim Database
         run: |
           ./gradlew generateSeforimDb \
             -PreleaseName=${{ steps.release_meta.outputs.release_tag }} \
             -PdbVersion=${{ steps.discover.outputs.db_version }} \
             -PinMemoryDb=false \
+            -PsefariaInMemoryDb=true \
             --no-daemon --stacktrace
 
       - name: Package Seforim Bundle (split tar.zst)
