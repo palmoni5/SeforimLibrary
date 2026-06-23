@@ -80,12 +80,62 @@ tasks.register<JavaExec>("downloadLexicalDb") {
     jvmArgs = listOf("-Xmx512m")
 }
 
+// Download otzar-HB_catalog.db (from latest Otzaria/otzar-HB_catalog release) next to seforim.db
+// Usage:
+//   ./gradlew :packaging:downloadOtzarCatalog
+//   ./gradlew :packaging:downloadOtzarCatalog -PseforimDb=/path/to/seforim.db
+tasks.register<JavaExec>("downloadOtzarCatalog") {
+    group = "application"
+    description = "Download otzar-HB_catalog.db (zstd) from latest Otzaria/otzar-HB_catalog release next to seforim.db."
+
+    dependsOn("jvmJar")
+    mainClass.set("io.github.kdroidfilter.seforimlibrary.packaging.DownloadOtzarCatalogKt")
+    classpath = files(tasks.named("jvmJar")) + configurations.getByName("jvmRuntimeClasspath")
+
+    // Place otzar-HB_catalog.db next to the same DB that will be packaged.
+    if (project.hasProperty("seforimDb")) {
+        systemProperty("seforimDb", project.property("seforimDb") as String)
+    } else if (System.getenv("SEFORIM_DB") != null) {
+        systemProperty("seforimDb", System.getenv("SEFORIM_DB"))
+    } else {
+        val defaultDbPath = rootProject.layout.buildDirectory.file("seforim.db").get().asFile.absolutePath
+        systemProperty("seforimDb", defaultDbPath)
+    }
+
+    jvmArgs = listOf("-Xmx512m")
+}
+
+// Download the Talmud Bavli PDF folder (from latest Otzaria/otzaria-library release) next to seforim.db
+// Usage:
+//   ./gradlew :packaging:downloadTalmudBavli
+//   ./gradlew :packaging:downloadTalmudBavli -PseforimDb=/path/to/seforim.db
+tasks.register<JavaExec>("downloadTalmudBavli") {
+    group = "application"
+    description = "Download and extract the 'תלמוד בבלי' PDF folder from latest Otzaria/otzaria-library release next to seforim.db."
+
+    dependsOn("jvmJar")
+    mainClass.set("io.github.kdroidfilter.seforimlibrary.packaging.DownloadTalmudBavliKt")
+    classpath = files(tasks.named("jvmJar")) + configurations.getByName("jvmRuntimeClasspath")
+
+    // Place the 'תלמוד בבלי' folder next to the same DB that will be packaged.
+    if (project.hasProperty("seforimDb")) {
+        systemProperty("seforimDb", project.property("seforimDb") as String)
+    } else if (System.getenv("SEFORIM_DB") != null) {
+        systemProperty("seforimDb", System.getenv("SEFORIM_DB"))
+    } else {
+        val defaultDbPath = rootProject.layout.buildDirectory.file("seforim.db").get().asFile.absolutePath
+        systemProperty("seforimDb", defaultDbPath)
+    }
+
+    jvmArgs = listOf("-Xmx512m")
+}
+
 // Package DB + Lucene indexes into single tar.zst and split
 tasks.register<JavaExec>("packageArtifacts") {
     group = "application"
-    description = "Create seforim_bundle.tar.zst (DB + indexes + release info) with zstd and split into ~1.9GiB parts."
+    description = "Create seforim_bundle.tar.zst (DB + indexes + release info + Otzar catalog + Talmud Bavli PDFs) with zstd and split into ~1.9GiB parts."
 
-    dependsOn("jvmJar", "writeReleaseInfo", "downloadLexicalDb")
+    dependsOn("jvmJar", "writeReleaseInfo", "downloadLexicalDb", "downloadOtzarCatalog", "downloadTalmudBavli")
     mainClass.set("io.github.kdroidfilter.seforimlibrary.packaging.PackageArtifactsKt")
     classpath = files(tasks.named("jvmJar")) + configurations.getByName("jvmRuntimeClasspath")
 

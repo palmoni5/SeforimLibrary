@@ -65,12 +65,18 @@ fun main(args: Array<String>) {
 
     // Resolve precomputed catalog next to the DB
     val catalogPath: Path = dbPath.resolveSibling("catalog.pb")
-    
+
     // Resolve release info file next to the DB
     val releaseInfoPath: Path = dbPath.resolveSibling("release_info.txt")
 
     // Resolve lexical DB next to the DB
     val lexicalDbPath: Path = dbPath.resolveSibling("lexical.db")
+
+    // Resolve the Otzar HaChochma catalog DB next to the DB
+    val otzarCatalogDbPath: Path = dbPath.resolveSibling("otzar-HB_catalog.db")
+
+    // Resolve the Talmud Bavli PDF folder next to the DB
+    val talmudBavliDir: Path = dbPath.resolveSibling(TALMUD_BAVLI_DIR_NAME)
 
     if (!textIndexDir.toFile().isDirectory) {
         logger.w { "Lucene text index directory missing: $textIndexDir (will skip)" }
@@ -86,6 +92,12 @@ fun main(args: Array<String>) {
     }
     if (!lexicalDbPath.exists()) {
         logger.w { "Lexical DB missing: $lexicalDbPath (will skip)" }
+    }
+    if (!otzarCatalogDbPath.exists()) {
+        logger.w { "Otzar catalog DB missing: $otzarCatalogDbPath (will skip)" }
+    }
+    if (!talmudBavliDir.toFile().isDirectory) {
+        logger.w { "Talmud Bavli folder missing: $talmudBavliDir (will skip)" }
     }
 
     // Output: single bundle tar.zst
@@ -126,6 +138,8 @@ fun main(args: Array<String>) {
             " - Catalog: $catalogPath\n" +
             " - Release info: $releaseInfoPath\n" +
             " - Lexical DB: $lexicalDbPath\n" +
+            " - Otzar catalog DB: $otzarCatalogDbPath\n" +
+            " - Talmud Bavli folder: $talmudBavliDir\n" +
             " - Text index: $textIndexDir\n" +
             " - Lookup index: $lookupIndexDir\n" +
             " -> Bundle .tar.zst: $bundleOutputPath\n" +
@@ -142,12 +156,17 @@ fun main(args: Array<String>) {
                     TarArchiveOutputStream(zstd).use { tar ->
                         tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
                         tar.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_POSIX)
+                        // Emit PAX headers for non-ASCII names (e.g. the Hebrew "תלמוד בבלי"
+                        // folder and PDF filenames) so they survive cross-platform extraction.
+                        tar.setAddPaxHeadersForNonAsciiNames(true)
 
                         val haveText = textIndexDir.toFile().isDirectory
                         val haveLookup = lookupIndexDir.toFile().isDirectory
                         val haveCatalog = catalogPath.exists()
                         val haveReleaseInfo = releaseInfoPath.exists()
                         val haveLexicalDb = lexicalDbPath.exists()
+                        val haveOtzarCatalog = otzarCatalogDbPath.exists()
+                        val haveTalmudBavli = talmudBavliDir.toFile().isDirectory
 
                         if (haveLookup) {
                             addDirectoryToTar(tar, lookupIndexDir, lookupIndexDir.fileName.toString(), logger)
@@ -177,6 +196,22 @@ fun main(args: Array<String>) {
                             logger.i { "Added precomputed catalog to bundle" }
                         } else {
                             logger.w { "Precomputed catalog missing: $catalogPath (skipped)" }
+                        }
+
+                        // Add the Otzar HaChochma catalog DB if available (sibling of seforim.db)
+                        if (haveOtzarCatalog) {
+                            addFileToTar(tar, otzarCatalogDbPath, otzarCatalogDbPath.fileName.toString(), logger)
+                            logger.i { "Added Otzar catalog DB to bundle" }
+                        } else {
+                            logger.w { "Otzar catalog DB missing: $otzarCatalogDbPath (skipped)" }
+                        }
+
+                        // Add the Talmud Bavli PDF folder if available (sibling of seforim.db)
+                        if (haveTalmudBavli) {
+                            addDirectoryToTar(tar, talmudBavliDir, talmudBavliDir.fileName.toString(), logger)
+                            logger.i { "Added Talmud Bavli folder to bundle" }
+                        } else {
+                            logger.w { "Talmud Bavli folder missing: $talmudBavliDir (skipped)" }
                         }
                         
                         // Add the release info file if available

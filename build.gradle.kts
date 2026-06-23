@@ -19,6 +19,8 @@ tasks.register("generateSeforimDb") {
     dependsOn(":searchindex:buildLuceneIndexDefault")
     dependsOn(":packaging:writeReleaseInfo")
     dependsOn(":packaging:downloadLexicalDb")
+    dependsOn(":packaging:downloadOtzarCatalog")
+    dependsOn(":packaging:downloadTalmudBavli")
     // Stamps schema_meta.db_version into the produced seforim.db so the
     // delta client can read it. Without this, every client reads
     // db_version=0 (default) and the path chooser always picks FullBundle
@@ -167,6 +169,11 @@ tasks.register<Delete>("cleanGeneratedData") {
     delete(layout.buildDirectory.file("lexical.db"))
     delete(layout.buildDirectory.file("catalog.pb"))
     delete(layout.buildDirectory.file("release_info.txt"))
+
+    // Downloaded companion artifacts (bundled next to seforim.db)
+    delete(layout.buildDirectory.file("otzar-HB_catalog.db"))
+    delete(layout.buildDirectory.file("otzar-HB_catalog.db.bak"))
+    delete(layout.buildDirectory.dir("תלמוד בבלי"))
 
     // Lucene indexes
     delete(layout.buildDirectory.dir("seforim.db.lucene"))

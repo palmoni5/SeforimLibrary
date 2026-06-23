@@ -122,9 +122,19 @@ Outputs (by default): `build/seforim.db` + `build/catalog.pb`
 # 5) Download lexical.db next to the DB (used by the app; auto-run by packaging)
 ./gradlew :packaging:downloadLexicalDb
 
+# 5b) Download companion artifacts placed next to the DB (auto-run by packaging):
+#     - otzar-HB_catalog.db   (from Otzaria/otzar-HB_catalog, decompressed .db.zst)
+#     - תלמוד בבלי/            (PDF folder from Otzaria/otzaria-library, talmud_bavli_latest.tar.zst)
+./gradlew :packaging:downloadOtzarCatalog
+./gradlew :packaging:downloadTalmudBavli
+
 # 6) Package everything into a single .tar.zst (plus split parts)
 ./gradlew :packaging:packageArtifacts
 ```
+
+The packaged `seforim_bundle.tar.zst` contains, alongside `seforim.db`:
+`lexical.db`, `catalog.pb`, the Lucene indexes, `otzar-HB_catalog.db`, and a
+`תלמוד בבלי/` folder holding the masechet PDFs.
 
 ## Project Structure
 
