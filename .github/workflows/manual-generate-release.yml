@@ -110,6 +110,9 @@ env:
   # 78 s (97% of the 2 GiB asset cap), L19 1,898,040,856 B in 440 s; the same DB
   # as seforim.db.zst -19 was 1,568,057,071 B.
   ZDB_LEVEL: ${{ vars.ZDB_LEVEL || '19' }}
+  # Dictionary of the zdb (repository variable ZDB_DICT), part of the reuse identity:
+  # trained = a 1MB dictionary trained on this DB, builtin = the CLI's seforim-v1.
+  ZDB_DICT: ${{ vars.ZDB_DICT || 'trained' }}
 
 # Only one release build at a time. A RAM-backed build dir (see the tmpfs step)
 # makes two concurrent runs on the same self-hosted host a memory hazard, and a
@@ -261,6 +264,8 @@ jobs:
           ZVFS_COMMIT=$(jq -er .commit .github/contracts/zvfs.json)
           [[ "$ZDB_LEVEL" =~ ^[1-9][0-9]?$ ]] && [ "$ZDB_LEVEL" -le 22 ] || {
             echo "::error::repository variable ZDB_LEVEL='$ZDB_LEVEL' is not a zstd level 1..22"; exit 1; }
+          [[ "$ZDB_DICT" =~ ^(trained|builtin)$ ]] || {
+            echo "::error::repository variable ZDB_DICT='$ZDB_DICT' is neither trained nor builtin"; exit 1; }
           mkdir -p "$RUNNER_TEMP/provenance-scan"
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -s 'add' > "$RUNNER_TEMP/releases.json"
           MATCHES=0
@@ -301,13 +306,13 @@ jobs:
               --arg ec "$EXPECTED_LINKS_COMMIT" --arg tc "$OTZARIA_TARGET_COMMIT" \
               --arg fd "$FORDB_ARCHIVE_SHA" --arg ft "$FORDB_TAG" \
               --arg phase2 "$PHASE2_IMPLEMENTATION_COMMIT" \
-              --arg zr "$ZVFS_REPOSITORY" --arg zc "$ZVFS_COMMIT" --argjson zl "$ZDB_LEVEL" \
+              --arg zr "$ZVFS_REPOSITORY" --arg zc "$ZVFS_COMMIT" --argjson zl "$ZDB_LEVEL" --arg zd "$ZDB_DICT" \
               '.source_commit==$source and .sefaria_tag==$st and .sefaria_release_metadata_sha256==$sm and
                .sefaria_archive_sha256==$sa and .otzaria_tag==$ot and .otzaria_asset_sha256==$oa and
                .expected_links_commit==$ec and .otzaria_target_commit==$tc and
                .fordb_archive_sha256==$fd and .fordb_tag==$ft and
                .phase2_implementation_commit==$phase2 and
-               .zvfs_repository==$zr and .zvfs_commit==$zc and .zdb_level==$zl' "$file" >/dev/null; then
+               .zvfs_repository==$zr and .zvfs_commit==$zc and .zdb_level==$zl and .zdb_dict==$zd' "$file" >/dev/null; then
               test "$draft" = false
               test "$target" = "$SOURCE_COMMIT"
               [[ "$tag" =~ ^v[1-9][0-9]*-[0-9]{14}$ ]]
@@ -2338,12 +2343,18 @@ jobs:
           # line-for-line equivalent by the semantic compare in Phase-2.  Naming
           # the unpublished rebuild here would hand every consumer a 404.
           snapshot_sha256 = os.environ["EXPECTED_LINKER_SNAPSHOT_ZST_SHA256"]
+          # The dictionary the zdb embeds, as its staged manifest names it; none for a .db.zst.
+          zdb_manifest = os.environ.get("FULL_DB_MANIFEST")
+          zdb_header = json.loads((stage / zdb_manifest).read_text(encoding="utf-8"))["zdb"] if zdb_manifest else {}
           value = {
-              "schema_version": 6,
+              "schema_version": 7,
               "zvfs_repository": os.environ["ZVFS_REPOSITORY"],
               "zvfs_commit": os.environ["ZVFS_COMMIT"],
               "zvfs_cli_sha256": os.environ["ZVFS_CLI_SHA256"],
               "zdb_level": int(os.environ["ZDB_LEVEL"]),
+              "zdb_dict": os.environ["ZDB_DICT"],
+              "zdb_dict_name": zdb_header.get("dictName"),
+              "zdb_dict_id": zdb_header.get("dictId"),
               "snapshot_zst_sha256": snapshot_sha256,
               "snapshot_release_tag": "lines-snapshot-sha256-" + snapshot_sha256,
               "correlation_id": os.environ["CORRELATION_ID"],

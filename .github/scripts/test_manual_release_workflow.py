@@ -229,7 +229,7 @@ class ManualReleaseWorkflowContractTest(unittest.TestCase):
         self.assertGreaterEqual(self.workflow.count(f"PHASE2_IMPLEMENTATION_COMMIT: {expression}"), 3)
         self.assertIn('--arg phase2 "$PHASE2_IMPLEMENTATION_COMMIT"', lookup)
         self.assertIn(".phase2_implementation_commit==$phase2", lookup)
-        self.assertIn('"schema_version": 6', stage)
+        self.assertIn('"schema_version": 7', stage)
         self.assertIn(
             '"phase2_implementation_commit": os.environ["PHASE2_IMPLEMENTATION_COMMIT"]',
             stage,
@@ -1896,7 +1896,7 @@ class ManualReleaseWorkflowContractTest(unittest.TestCase):
 
         # The staging step copies the buildstate and the DB, never the snapshot.
         self.assertNotIn('cp build/lines_snapshot.db.zst', stage)
-        self.assertIn('"schema_version": 6,', stage)
+        self.assertIn('"schema_version": 7,', stage)
         self.assertIn('"snapshot_zst_sha256": snapshot_sha256,', stage)
         self.assertIn(
             '"snapshot_release_tag": "lines-snapshot-sha256-" + snapshot_sha256,', stage
@@ -2747,12 +2747,22 @@ class ManualReleaseWorkflowContractTest(unittest.TestCase):
         for field in ("zvfs_repository", "zvfs_commit", "zvfs_cli_sha256"):
             self.assertIn(f'"{field}": os.environ["{field.upper()}"],', stage)
         self.assertIn('"zdb_level": int(os.environ["ZDB_LEVEL"]),', stage)
-        # Reuse needs the same converter and level; the CLI digest is per-arch.
+        self.assertIn('"zdb_dict": os.environ["ZDB_DICT"],', stage)
+        # The dictionary's name and id come from the staged manifest, null without a zdb.
+        self.assertIn('"zdb_dict_name": zdb_header.get("dictName"),', stage)
+        self.assertIn('"zdb_dict_id": zdb_header.get("dictId"),', stage)
+        self.assertIn('json.loads((stage / zdb_manifest).read_text(encoding="utf-8"))["zdb"]', stage)
+        # Reuse needs the same converter, level and dictionary mode; the CLI digest is
+        # per-arch, and a trained dictionary's id is known only after the build.
         lookup = self.step("Find and verify exact provenance")
         self.assertIn("ZVFS_COMMIT=$(jq -er .commit .github/contracts/zvfs.json)", lookup)
-        self.assertIn(".zvfs_repository==$zr and .zvfs_commit==$zc and .zdb_level==$zl", lookup)
+        self.assertIn(".zvfs_repository==$zr and .zvfs_commit==$zc and .zdb_level==$zl and .zdb_dict==$zd",
+                      lookup)
+        self.assertIn('[[ "$ZDB_DICT" =~ ^(trained|builtin)$ ]]', lookup)
         self.assertNotIn(".zvfs_cli_sha256==", lookup)
+        self.assertNotIn(".zdb_dict_id==", lookup)
         self.assertEqual(self.workflow.count("ZDB_LEVEL: ${{ vars.ZDB_LEVEL || '19' }}"), 1)
+        self.assertEqual(self.workflow.count("ZDB_DICT: ${{ vars.ZDB_DICT || 'trained' }}"), 1)
 
     def test_a_schema_6_full_db_ships_as_a_verified_zdb_with_its_manifest(self):
         package = self.step("Package Seforim Database (zstd or zdb)")
@@ -2768,8 +2778,13 @@ class ManualReleaseWorkflowContractTest(unittest.TestCase):
 
         script = (SCRIPTS_DIR / "package_full_db_zdb.sh").read_text(encoding="utf-8")
         self.assertIn(
-            '"$ZVFS_CLI" convert "$db" "$zdb" --dict seforim-v1 --level "$ZDB_LEVEL" \\\n'
-            '  --threads "$threads" --uuid-from-content --created-ms 0',
+            '"$ZVFS_CLI" convert "$db" "$zdb" "${dict_args[@]}" --level "$ZDB_LEVEL" \\\n'
+            '  --threads "$threads" --keep-freelist --uuid-from-content --created-ms 0',
+            script,
+        )
+        # The measured parameters: 12000 pages, 1024 KB, fastcover k=2000 d=8.
+        self.assertIn(
+            'trained=$("$ZVFS_CLI" train "$db" "$dict_file" 12000 1024 --fastcover --k 2000 --d 8)',
             script,
         )
         self.assertIn('[ "$threads" -le 16 ] || threads=16', script)
@@ -2792,7 +2807,7 @@ class ManualReleaseWorkflowContractTest(unittest.TestCase):
         cleanup = self.step("Clean run-scoped disk leftovers (workspace persists on self-hosted)")
         self.assertIn('"$RUNNER_TEMP/zdb-roundtrip-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; do', cleanup)
 
-    def _package_zdb(self, tmp, cli_body, patch_manifests=()):
+    def _package_zdb(self, tmp, cli_body, patch_manifests=(), **extra_env):
         root = Path(tmp)
         bin_dir = root / "bin"
         bin_dir.mkdir()
@@ -2813,8 +2828,10 @@ class ManualReleaseWorkflowContractTest(unittest.TestCase):
             os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", ZVFS_CLI=cli.as_posix(),
             ZVFS_REPOSITORY="palmoni5/otzaria", ZVFS_COMMIT="c" * 40, ZDB_LEVEL="19",
             DB_VERSION="30", DB_SCHEMA_VERSION="6", CONTENT_HASH="a" * 64,
-            PATCH_MANIFEST_DIR=str(patches),
+            PATCH_MANIFEST_DIR=str(patches), STUB_STATE=(root / "stub.json").as_posix(),
         )
+        env.pop("ZDB_DICT", None)
+        env.update(extra_env)
         done = subprocess.run(
             [shutil.which("bash"), (SCRIPTS_DIR / "package_full_db_zdb.sh").as_posix(), db.as_posix(),
              (root / "build").as_posix(), (root / "scratch").as_posix()],
@@ -2822,23 +2839,49 @@ class ManualReleaseWorkflowContractTest(unittest.TestCase):
         )
         return done, root / "build" / "seforim-schema6.zdb"
 
-    # A stand-in converter: the "zdb" is the DB itself, info reports its sizes.
+    # A stand-in converter: the "zdb" is the DB itself, info reports its sizes and
+    # the dictionary convert was given. Every call is logged to $STUB_STATE.log.
     COPY_CLI = """
         import json, os, shutil, sys
         cmd = sys.argv[1]
+        state = os.environ["STUB_STATE"]
+        with open(state + ".log", "a") as log:
+            log.write(json.dumps(sys.argv[1:]) + "\\n")
         if cmd == "convert":
             shutil.copyfile(sys.argv[2], sys.argv[3])
+        if cmd == "convert":
+            args = sys.argv[4:]
+            if "--dict-file" in args:
+                path = args[args.index("--dict-file") + 1]
+                embedded = {"dictName": args[args.index("--dict-name") + 1],
+                            "dictLength": os.path.getsize(path), "dictId": 424242,
+                            "dictXxh64": "00000000deadbeef"}
+            else:
+                embedded = {"dictName": args[args.index("--dict") + 1], "dictLength": 112640,
+                            "dictId": 7, "dictXxh64": "0" * 16}
+            with open(state, "w") as out:
+                json.dump(embedded, out)
+        elif cmd == "train":
+            with open(sys.argv[3], "wb") as out:
+                out.write(b"d" * 1048576)
+            print("dict 1048576 bytes id 424242 xxh64 00000000deadbeef in 2.5s")
         elif cmd == "export":
             shutil.copyfile(sys.argv[2], sys.argv[3])
         elif cmd == "info":
             path = sys.argv[3]
             size = os.path.getsize(path)
+            with open(state) as embedded:
+                embedded = json.load(embedded)
             print(json.dumps({"formatMajor": 1, "formatMinor": 2, "fileUuid": "0" * 32,
                               "contentXxh64": "1" * 16, "logicalSize": size, "pageSize": 4096,
-                              "dictName": "seforim-v1", "dictId": 7, "level": 19,
-                              "physicalSize": size, "lockGap": False,
-                              "overlay": {"present": False}}))
+                              "level": 19, "physicalSize": size, "lockGap": False,
+                              "overlay": {"present": False}, **embedded}))
         """
+
+    @staticmethod
+    def _cli_calls(tmp):
+        log = Path(tmp) / "stub.json.log"
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
 
     @unittest.skipUnless(shutil.which("bash") and shutil.which("sha256sum") and shutil.which("cmp"),
                          "bash, sha256sum and cmp are required")
@@ -2867,6 +2910,17 @@ class ManualReleaseWorkflowContractTest(unittest.TestCase):
             self.assertEqual(manifest["converter"], {"repository": "palmoni5/otzaria", "commit": "c" * 40})
             self.assertIn("agrees with 1 delta manifest(s)", done.stdout)
             self.assertEqual(list((Path(tmp) / "scratch").iterdir()), [])
+            # By default the dictionary is trained on this DB and named after its version.
+            self.assertEqual((manifest["zdb"]["dictName"], manifest["zdb"]["dictId"]), ("seforim-v2-30", 424242))
+            scratch = (Path(tmp) / "scratch").as_posix()
+            db = (Path(tmp) / "build" / "seforim.db").as_posix()
+            calls = self._cli_calls(tmp)
+            self.assertEqual([call[0] for call in calls], ["train", "convert", "verify", "export", "info"])
+            self.assertEqual(calls[0], ["train", db, f"{scratch}/seforim-v2-30.dict", "12000", "1024",
+                                        "--fastcover", "--k", "2000", "--d", "8"])
+            self.assertEqual(calls[1][3:7], ["--dict-file", f"{scratch}/seforim-v2-30.dict",
+                                             "--dict-name", "seforim-v2-30"])
+            self.assertIn("--keep-freelist", calls[1])
 
         # A delta ending anywhere else is a build failure, not a manifest.
         with tempfile.TemporaryDirectory() as tmp:
@@ -2890,6 +2944,38 @@ class ManualReleaseWorkflowContractTest(unittest.TestCase):
             done, zdb = self._package_zdb(tmp, broken)
             self.assertNotEqual(done.returncode, 0)
             self.assertIn("does not export back", done.stderr)
+            self.assertFalse(zdb.with_name(zdb.name + ".manifest.json").exists())
+            self.assertEqual(list((Path(tmp) / "scratch").iterdir()), [])
+
+    @unittest.skipUnless(shutil.which("bash") and shutil.which("sha256sum") and shutil.which("cmp"),
+                         "bash, sha256sum and cmp are required")
+    def test_zdb_dict_builtin_falls_back_to_the_clis_seforim_v1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            done, zdb = self._package_zdb(tmp, self.COPY_CLI, ZDB_DICT="builtin")
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            manifest = json.loads(zdb.with_name(zdb.name + ".manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual((manifest["zdb"]["dictName"], manifest["zdb"]["dictId"]), ("seforim-v1", 7))
+            calls = self._cli_calls(tmp)
+            self.assertEqual([call[0] for call in calls], ["convert", "verify", "export", "info"])
+            self.assertEqual(calls[0][3:5], ["--dict", "seforim-v1"])
+            self.assertIn("--keep-freelist", calls[0])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            done, zdb = self._package_zdb(tmp, self.COPY_CLI, ZDB_DICT="none")
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("ZDB_DICT 'none' is neither trained nor builtin", done.stderr)
+            self.assertFalse(zdb.exists())
+
+    @unittest.skipUnless(shutil.which("bash") and shutil.which("sha256sum") and shutil.which("cmp"),
+                         "bash, sha256sum and cmp are required")
+    def test_a_zdb_that_does_not_embed_the_trained_dictionary_fails_the_build(self):
+        other = self.COPY_CLI.replace('"dictLength": os.path.getsize(path), "dictId": 424242,',
+                                      '"dictLength": os.path.getsize(path), "dictId": 424243,')
+        self.assertNotEqual(other, self.COPY_CLI)
+        with tempfile.TemporaryDirectory() as tmp:
+            done, zdb = self._package_zdb(tmp, other)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("is not the trained (1048576, 424242, '00000000deadbeef')", done.stderr)
             self.assertFalse(zdb.with_name(zdb.name + ".manifest.json").exists())
             self.assertEqual(list((Path(tmp) / "scratch").iterdir()), [])
 

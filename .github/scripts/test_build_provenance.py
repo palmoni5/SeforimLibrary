@@ -34,10 +34,12 @@ class BuildProvenanceContractTest(unittest.TestCase):
         """A published document of an older schema version, assets and all."""
         value = self.value()
         value["schema_version"] = version
-        for key in contract.V6_KEYS - {1: contract.V1_KEYS, 2: contract.V2_KEYS,
+        for key in contract.V7_KEYS - {1: contract.V1_KEYS, 2: contract.V2_KEYS,
                                        3: contract.V3_KEYS, 4: contract.V4_KEYS,
-                                       5: contract.V5_KEYS}[version]:
+                                       5: contract.V5_KEYS, 6: contract.V6_KEYS}[version]:
             del value[key]
+        if version == 6:
+            return value
         if "db_schema" in value:
             value["db_schema"]["db_schema_version"] = 4
         assets = self.V5_ASSETS if version == 5 else self.LEGACY_ASSETS
@@ -47,11 +49,14 @@ class BuildProvenanceContractTest(unittest.TestCase):
     def value(self):
         sha = "a" * 64
         return {
-            "schema_version": 6,
+            "schema_version": 7,
             "zvfs_repository": "palmoni5/otzaria",
             "zvfs_commit": "c" * 40,
             "zvfs_cli_sha256": "d" * 64,
             "zdb_level": 19,
+            "zdb_dict": "trained",
+            "zdb_dict_name": "seforim-v2-30",
+            "zdb_dict_id": 1234567890,
             "snapshot_zst_sha256": "b" * 64,
             "snapshot_release_tag": "lines-snapshot-sha256-" + "b" * 64,
             "correlation_id": f"sefaria:1:2:export-v1:{sha}",
@@ -235,7 +240,7 @@ class BuildProvenanceContractTest(unittest.TestCase):
             self.assertEqual(len(lines), 1, lines)
             self.assertRegex(
                 lines[0],
-                r"^ok: build_provenance v6, \d+ fields, 3 assets, "
+                r"^ok: build_provenance v7, \d+ fields, 3 assets, "
                 r"source_commit=[0-9a-f]{12} \(.*build_provenance\.json\)$",
             )
 
@@ -314,6 +319,47 @@ class BuildProvenanceContractTest(unittest.TestCase):
             # …and a v5 document may not claim a converter.
             value = self.downgrade(5)
             value["zvfs_commit"] = "c" * 40
+            with self.assertRaises(ValueError):
+                contract.load(self.write(tmp, value))
+
+    def test_v7_names_the_zdb_dictionary_strictly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            value = self.value()
+            value.update(zdb_dict="builtin", zdb_dict_name="seforim-v1", zdb_dict_id=7)
+            contract.validate(contract.load(self.write(tmp, value)))
+            for changes in (
+                {"zdb_dict": "none"},
+                {"zdb_dict": None},
+                # The name follows the mode: a trained dictionary is never seforim-v1.
+                {"zdb_dict_name": "seforim-v1"},
+                {"zdb_dict": "builtin"},
+                {"zdb_dict_name": "seforim-v2-030"},
+                {"zdb_dict_name": "seforim-v2-"},
+                {"zdb_dict_name": None},
+                {"zdb_dict_id": 0},
+                {"zdb_dict_id": 1 << 32},
+                {"zdb_dict_id": True},
+                {"zdb_dict_id": "7"},
+                {"zdb_dict_id": None},
+            ):
+                value = self.value()
+                value.update(changes)
+                with self.assertRaises(ValueError, msg=repr(changes)):
+                    contract.validate(contract.load(self.write(tmp, value)))
+
+            # A schema <= 5 DB ships as seforim.db.zst: no dictionary to name.
+            value = self.value()
+            value.update(zdb_dict_name=None, zdb_dict_id=None, assets=self.V5_ASSETS)
+            value["db_schema"]["db_schema_version"] = 5
+            contract.validate(contract.load(self.write(tmp, value)))
+            value["zdb_dict_id"] = 7
+            with self.assertRaises(ValueError):
+                contract.validate(contract.load(self.write(tmp, value)))
+
+            # v6 (no dictionary keys) stays readable, and may not claim them.
+            value = self.downgrade(6)
+            contract.validate(contract.load(self.write(tmp, value)))
+            value["zdb_dict"] = "trained"
             with self.assertRaises(ValueError):
                 contract.load(self.write(tmp, value))
 

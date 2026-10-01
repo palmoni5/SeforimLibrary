@@ -48,6 +48,11 @@ V5_KEYS = V4_KEYS | {"snapshot_zst_sha256", "snapshot_release_tag"}
 # the converter that made it: the pinned zvfs source (.github/contracts/zvfs.json),
 # the sha256 of the zvfs_cli built from it on this runner, and the level used.
 V6_KEYS = V5_KEYS | {"zvfs_repository", "zvfs_commit", "zvfs_cli_sha256", "zdb_level"}
+# v7 names the zdb's dictionary: the mode (ZDB_DICT, part of the reuse identity) and
+# the dictName/dictId its manifest carries, both null when the full DB is not a zdb.
+V7_KEYS = V6_KEYS | {"zdb_dict", "zdb_dict_name", "zdb_dict_id"}
+BUILTIN_DICT = "seforim-v1"
+TRAINED_DICT = re.compile(r"seforim-v2-[1-9][0-9]{0,9}")
 REPOSITORY = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 LEGACY_FULL_DB_ASSET = "seforim.db.zst"
@@ -72,9 +77,10 @@ def load(path: Path) -> dict:
     if not isinstance(value, dict):
         raise ValueError("build provenance must be an object")
     version = value.get("schema_version")
-    if type(version) is not int or version not in (1, 2, 3, 4, 5, 6):
-        raise ValueError("schema_version must be integer 1, 2, 3, 4, 5 or 6")
-    expected_keys = {1: V1_KEYS, 2: V2_KEYS, 3: V3_KEYS, 4: V4_KEYS, 5: V5_KEYS, 6: V6_KEYS}[version]
+    if type(version) is not int or version not in (1, 2, 3, 4, 5, 6, 7):
+        raise ValueError("schema_version must be integer 1..7")
+    expected_keys = {1: V1_KEYS, 2: V2_KEYS, 3: V3_KEYS, 4: V4_KEYS, 5: V5_KEYS, 6: V6_KEYS,
+                     7: V7_KEYS}[version]
     if set(value) != expected_keys:
         raise ValueError("unknown build provenance key set")
     canonical = json.dumps(
@@ -193,6 +199,20 @@ def validate(value: dict) -> None:
     # No release before v6 carried a schema-6+ DB; only v6 knows the zdb asset set.
     if version < 6 and full_db != LEGACY_FULL_DB_ASSET:
         raise ValueError("a schema 6+ DB requires build provenance v6")
+    if version >= 7:
+        mode, dict_name, dict_id = value["zdb_dict"], value["zdb_dict_name"], value["zdb_dict_id"]
+        if mode not in ("trained", "builtin"):
+            raise ValueError("zdb_dict must be trained or builtin")
+        if full_db == LEGACY_FULL_DB_ASSET:
+            if dict_name is not None or dict_id is not None:
+                raise ValueError("zdb_dict_name and zdb_dict_id must be null without a zdb")
+        else:
+            if not isinstance(dict_name, str) or not (
+                TRAINED_DICT.fullmatch(dict_name) if mode == "trained" else dict_name == BUILTIN_DICT
+            ):
+                raise ValueError(f"zdb_dict_name {dict_name!r} does not fit zdb_dict {mode!r}")
+            if type(dict_id) is not int or not 1 <= dict_id <= 0xFFFFFFFF:
+                raise ValueError("zdb_dict_id must be an integer 1..2^32-1")
     if version >= 5:
         required = {full_db, "seforim.db.buildstate.zst"}
         forbidden = {"seforim.db.buildstate", "lines_snapshot.db.zst"}

@@ -4,7 +4,9 @@
 #
 # Usage: package_full_db_zdb.sh <seforim.db> <out-dir> <scratch-dir>
 # Env:   ZVFS_CLI ZVFS_REPOSITORY ZVFS_COMMIT ZDB_LEVEL DB_VERSION
-#        DB_SCHEMA_VERSION CONTENT_HASH [PATCH_MANIFEST_DIR]
+#        DB_SCHEMA_VERSION CONTENT_HASH [PATCH_MANIFEST_DIR] [ZDB_DICT]
+# ZDB_DICT=trained (default) trains a 1MB dictionary on this DB and embeds it as
+# seforim-v2-<DB_VERSION>; ZDB_DICT=builtin embeds the CLI's seforim-v1.
 # <scratch-dir> needs one uncompressed DB free:
 # the zdb is exported there and compared byte for byte with <seforim.db>.
 set -euo pipefail
@@ -19,6 +21,14 @@ esac
   echo "::error::ZDB_LEVEL $ZDB_LEVEL is outside 1..22" >&2; exit 1; }
 [[ "$CONTENT_HASH" =~ ^[0-9a-f]{64}$ ]] || {
   echo "::error::CONTENT_HASH '$CONTENT_HASH' is not a sha256" >&2; exit 1; }
+[[ "$DB_VERSION" =~ ^[1-9][0-9]{0,9}$ ]] || {
+  echo "::error::DB_VERSION '$DB_VERSION' is not a positive integer" >&2; exit 1; }
+dict_mode="${ZDB_DICT:-trained}"
+case "$dict_mode" in
+  trained) dict_name="seforim-v2-$DB_VERSION" ;;
+  builtin) dict_name=seforim-v1 ;;
+  *) echo "::error::ZDB_DICT '$dict_mode' is neither trained nor builtin" >&2; exit 1 ;;
+esac
 
 # shellcheck source=db_asset_names.sh
 . "$(dirname "${BASH_SOURCE[0]}")/db_asset_names.sh"
@@ -31,18 +41,32 @@ zdb="$out/$name"
 manifest="$zdb.manifest.json"
 info="$scratch/$name.info.json"
 roundtrip="$scratch/$name.export.db"
+dict_file="$scratch/$dict_name.dict"
 mkdir -p "$scratch"
-rm -f "$zdb" "$zdb.part" "$manifest" "$info" "$roundtrip" "$roundtrip.part"
+rm -f "$zdb" "$zdb.part" "$manifest" "$info" "$roundtrip" "$roundtrip.part" "$dict_file"
+trap 'rm -f "$dict_file" "$info"' EXIT
 
 # The output bytes do not depend on the thread count; the CLI accepts 1..16.
 threads=$(nproc 2>/dev/null || echo 4)
 [ "$threads" -le 16 ] || threads=16
-# --created-ms 0 + --uuid-from-content: the same DB, level and CLI give the same file.
+dict_args=(--dict seforim-v1)
+trained=""
+if [ "$dict_mode" = trained ]; then
+  # Deterministic and single-threaded (train has no --threads): a fixed page
+  # sampler and fastcover with explicit k/d. Prints "dict N bytes id I xxh64 H in Ts".
+  started=$(date +%s)
+  trained=$("$ZVFS_CLI" train "$db" "$dict_file" 12000 1024 --fastcover --k 2000 --d 8)
+  echo "zdb: trained $dict_name: $trained, wall $(( $(date +%s) - started ))s"
+  dict_args=(--dict-file "$dict_file" --dict-name "$dict_name")
+fi
+# --created-ms 0 + --uuid-from-content: the same DB, level, dictionary and CLI give
+# the same file. --keep-freelist: the zdb must export back to this DB byte for byte.
 started=$(date +%s)
-"$ZVFS_CLI" convert "$db" "$zdb" --dict seforim-v1 --level "$ZDB_LEVEL" \
-  --threads "$threads" --uuid-from-content --created-ms 0
+"$ZVFS_CLI" convert "$db" "$zdb" "${dict_args[@]}" --level "$ZDB_LEVEL" \
+  --threads "$threads" --keep-freelist --uuid-from-content --created-ms 0
+rm -f "$dict_file"
 size=$(stat -c %s "$zdb")
-echo "zdb: $name $size bytes, level $ZDB_LEVEL, $threads threads, $(( $(date +%s) - started ))s"
+echo "zdb: $name $size bytes, level $ZDB_LEVEL, dict $dict_name, $threads threads, $(( $(date +%s) - started ))s"
 # GitHub refuses a release asset of 2 GiB or more; a zdb is never split.
 if [ "$size" -gt 2147483647 ]; then
   echo "::error::$name is $size bytes, over GitHub's 2 GiB per-asset limit — raise ZDB_LEVEL or shrink the DB; a zdb is not split" >&2
@@ -63,11 +87,11 @@ echo "zdb: export is byte-identical to $db ($(( $(date +%s) - started ))s)"
 
 sha=$(sha256sum "$zdb" | cut -d' ' -f1)
 python3 - "$info" "$manifest" "$name" "$size" "$sha" "$(stat -c %s "$db")" \
-  "${PATCH_MANIFEST_DIR:-}" <<'PY'
+  "${PATCH_MANIFEST_DIR:-}" "$dict_name" "$trained" <<'PY'
 import json, os, re, sys
 from pathlib import Path
 
-info_path, manifest_path, name, size, sha, db_size, patch_dir = sys.argv[1:]
+info_path, manifest_path, name, size, sha, db_size, patch_dir, dict_name, trained = sys.argv[1:]
 info = json.loads(Path(info_path).read_text(encoding="utf-8"))
 env = os.environ
 level = int(env["ZDB_LEVEL"])
@@ -99,8 +123,17 @@ zdb = {
     "dictId": integer("dictId", 1),
     "level": integer("level", 1),
 }
-if zdb["dictName"] != "seforim-v1":
-    fail(f"dictName is {zdb['dictName']!r}, expected 'seforim-v1'")
+if zdb["dictName"] != dict_name:
+    fail(f"dictName is {zdb['dictName']!r}, expected {dict_name!r}")
+if trained:
+    # The embedded dictionary must be the one `train` just wrote.
+    match = re.fullmatch(r"dict ([0-9]+) bytes id ([0-9]+) xxh64 ([0-9a-f]{16}) in .*", trained)
+    if not match:
+        fail(f"zvfs_cli train printed {trained!r}")
+    want = (int(match[1]), int(match[2]), match[3])
+    got = (info.get("dictLength"), zdb["dictId"], info.get("dictXxh64"))
+    if got != want:
+        fail(f"embedded dictionary (length, id, xxh64) {got} is not the trained {want}")
 if zdb["level"] != level:
     fail(f"level is {zdb['level']}, expected {level}")
 if zdb["logicalSize"] != int(db_size):
