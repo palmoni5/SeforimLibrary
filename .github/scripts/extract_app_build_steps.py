@@ -29,12 +29,12 @@ FLUTTER_BUILD = "Build Flutter Linux app (with retry)"
 WPE_DOWNLOAD = "Download prebuilt WPE runtime SDK"
 
 # Reproduced by build-library-index.yml itself; pinned by fingerprint of the comment-free run.
+# WPE_DOWNLOAD is not: the builder image fetches the SDK itself, so only its version and digests matter.
 MIRRORED_RUN = {
     "Prepare container base tools": "b996259b07b684be56e7cc529cfb4f1712c3381f19e732bc41e383b2ab63b67b",
     "Set up Flutter (aarch64, from git)": "8518cce0a699547dc0517e1081e9709dad4bcff38defde7a22e4d02fb71225ce",
     "Add cargo to PATH and verify toolchain": "ccd2ca002cdeb025b85eace91b76b9c430c8459f11d07fc991221d30f6a4f879",
     "Install Linux build dependencies": "afad8660067a7909e955667c2cabd3782c2a5f889664f1bdc1604fa5daaa11cc",
-    WPE_DOWNLOAD: "291e7657cf03dd9b570975bf30f0bc9158bec15ed796b2eaf0887e7c30ede838",
     "Find and prepare Linux packages": "21a48f84f5ae62a1db74bf93c6d9f81ab22f3cbcb80a5fd993ba76586c50c7b1",
 }
 MIRRORED_USES = {
@@ -268,15 +268,12 @@ def check_mirrored(steps, arch):
     if f"--branch {flutter} " not in steps["Set up Flutter (aarch64, from git)"].get("run", ""):
         fail(f"the application no longer clones Flutter {flutter} for aarch64")
 
-    wpe = steps[WPE_DOWNLOAD]
-    wpe_env = wpe.get("env") or {}
-    if set(wpe_env) != {"WPE_RUNTIME_VERSION", "WPE_RUNTIME_SHA256"}:
-        fail(f"step '{WPE_DOWNLOAD}' environment changed: {sorted(wpe_env)}")
+    wpe_env = steps[WPE_DOWNLOAD].get("env") or {}
+    if not {"WPE_RUNTIME_VERSION", "WPE_RUNTIME_SHA256"} <= set(wpe_env):
+        fail(f"step '{WPE_DOWNLOAD}' no longer pins WPE_RUNTIME_VERSION and WPE_RUNTIME_SHA256: {sorted(wpe_env)}")
     if str(wpe_env["WPE_RUNTIME_VERSION"]) != pin("WPE_VERSION"):
         fail(f"the application builds with WPE {wpe_env['WPE_RUNTIME_VERSION']}; "
              f"the builder image pins {pin('WPE_VERSION')}")
-    if f'tag="{pin("WPE_TAG")}"' not in (wpe.get("run") or ""):
-        fail(f"the application no longer downloads WPE from tag {pin('WPE_TAG')}")
     digests = WPE_SHA_EXPR.match(str(wpe_env["WPE_RUNTIME_SHA256"]))
     if not digests:
         fail(f"WPE_RUNTIME_SHA256 is no longer a per-arch pair: {wpe_env['WPE_RUNTIME_SHA256']}")

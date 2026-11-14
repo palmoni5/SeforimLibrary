@@ -449,7 +449,7 @@ sys.exit(1)
                 steps.append({"name": name, "shell": "bash", "env": dict(x.FLUTTER_BUILD_ENV),
                               "run": x.FLUTTER_BUILD_RUN + "\n"})
             elif name == x.WPE_DOWNLOAD:
-                steps.append({"name": name, "shell": "bash", "run": 'tag="wpe-tag"\n', "env": {
+                steps.append({"name": name, "shell": "bash", "run": "download\n", "env": {
                     "WPE_RUNTIME_VERSION": "9.9.9",
                     "WPE_RUNTIME_SHA256":
                         "${{ matrix.arch == 'aarch64' && '" + "1" * 64 + "' || '" + "2" * 64 + "' }}"}})
@@ -468,7 +468,7 @@ sys.exit(1)
                 "strategy": {"matrix": {"target": ["deb", "raw"], "arch": ["x86_64", "aarch64"]}}}
 
     def check(self, x, job, arch="x86_64"):
-        env = dict(os.environ, FLUTTER_VERSION="3.47.7", WPE_VERSION="9.9.9", WPE_TAG="wpe-tag",
+        env = dict(os.environ, FLUTTER_VERSION="3.47.7", WPE_VERSION="9.9.9",
                    WPE_SHA256=("1" if arch == "aarch64" else "2") * 64)
         saved = dict(os.environ)
         os.environ.update(env)
@@ -493,7 +493,7 @@ sys.exit(1)
         self.assertEqual(
             [n for n, r in x.STEPS if r == "M"],
             [n for n, _ in x.STEPS if n in x.MIRRORED_RUN or n in x.MIRRORED_USES
-             or n == x.FLUTTER_BUILD],
+             or n in (x.FLUTTER_BUILD, x.WPE_DOWNLOAD)],
         )
         job = self.synthetic_job(x)
         self.assertEqual(self.check(x, job), 0)
@@ -539,6 +539,10 @@ sys.exit(1)
             "a swapped WPE digest": lambda c: step(c, x.WPE_DOWNLOAD)["env"].update(
                 WPE_RUNTIME_SHA256="${{ matrix.arch == 'aarch64' && '" + "2" * 64
                                    + "' || '" + "1" * 64 + "' }}"),
+            "another WPE version": lambda c: step(c, x.WPE_DOWNLOAD)["env"].update(
+                WPE_RUNTIME_VERSION="9.9.8"),
+            "an unpinned WPE digest": lambda c: step(c, x.WPE_DOWNLOAD)["env"].pop(
+                "WPE_RUNTIME_SHA256"),
         }
         for label, mutate in cases.items():
             self.assertEqual(drifted(mutate), 1, label)
@@ -551,6 +555,10 @@ sys.exit(1)
                 3, {"name": "New", "if": "matrix.target == 'deb' || matrix.target == 'rpm'",
                     "run": "x"}),
             "a removed FULL-only step": lambda c: c["steps"].remove(step(c, "FULL only")),
+            "a rewritten WPE download": lambda c: step(c, x.WPE_DOWNLOAD).update(
+                run="bash tool/ci/download.sh\n"),
+            "a new WPE download env var": lambda c: step(c, x.WPE_DOWNLOAD)["env"].update(
+                GITHUB_TOKEN="${{ github.token }}"),
             "anything after the raw bundle": lambda c: c["steps"].extend(
                 [{"name": "Later", "if": "steps.a.outputs.b == 'x'", "run": "x"},
                  {"name": "Later 2", "run": "x"}]),

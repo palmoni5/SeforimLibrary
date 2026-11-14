@@ -484,7 +484,7 @@ jobs:
           # replayed from the checked-out workflow, and its flutter build without retries.
           # Measured at 9 minutes on a hosted runner (run 35842760972); the bound only catches a hang.
           bounded_run 120m app --rm \
-            -e APP_ARCH -e FLUTTER_VERSION -e WPE_VERSION -e WPE_TAG -e WPE_SHA256 \
+            -e APP_ARCH -e FLUTTER_VERSION -e WPE_VERSION -e WPE_SHA256 \
             -e GITHUB_WORKSPACE=/work/otzaria-src \
             -e FLUTTER_BUILD_DIR="build/linux/$FLUTTER_ARCH/release" \
             -e PKG_CONFIG_PATH=/opt/wpe-sdk/lib/pkgconfig \
