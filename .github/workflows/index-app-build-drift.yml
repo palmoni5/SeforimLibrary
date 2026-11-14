@@ -1,0 +1,107 @@
+name: Index build drift check
+
+# Weekly: the index build replays build_linux of Otzaria/otzaria dev and refuses
+# any drift it cannot vouch for (extract_app_build_steps.py). Running that same
+# check days before Thursday's release finds the drift while there is time to fix it.
+# A failure opens (or comments on) an issue; the next clean run closes it.
+
+on:
+  schedule:
+    # Sunday morning, four days before the Thursday library release.
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: index-app-build-drift
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE_TITLE: 'Index build: the application build_linux drifted'
+
+    steps:
+      - name: Checkout SeforimLibrary
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Check build_linux of Otzaria/otzaria dev
+        id: check
+        run: |
+          set -euo pipefail
+          sha="$(gh api repos/Otzaria/otzaria/commits/dev --jq .sha)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          gh api "repos/Otzaria/otzaria/contents/.github/workflows/build-and-announce.yml?ref=$sha" \
+            -H 'Accept: application/vnd.github.raw' > "$RUNNER_TEMP/build-and-announce.yml"
+
+          # The pins the index build checks the application against, from its own env.
+          python3 - > "$RUNNER_TEMP/pins.env" <<'PY'
+          import yaml
+          env = yaml.safe_load(open(".github/workflows/build-library-index.yml"))["jobs"]["index"]["env"]
+          for key in ("FLUTTER_VERSION", "WPE_VERSION", "WPE_SHA256_X86_64", "WPE_SHA256_AARCH64"):
+              print(f"{key}={env[key]}")
+          PY
+          set -a; . "$RUNNER_TEMP/pins.env"; set +a
+
+          : > "$RUNNER_TEMP/errors.txt"
+          for arch in x86_64 aarch64; do
+            case "$arch" in
+              x86_64) WPE_SHA256="$WPE_SHA256_X86_64" ;;
+              aarch64) WPE_SHA256="$WPE_SHA256_AARCH64" ;;
+            esac
+            if ! WPE_SHA256="$WPE_SHA256" python3 .github/scripts/extract_app_build_steps.py \
+                "$RUNNER_TEMP/build-and-announce.yml" "$RUNNER_TEMP/steps-$arch" "$arch" \
+                2>> "$RUNNER_TEMP/errors.txt"; then
+              echo "$arch: drifted"
+            fi
+          done
+          if [ -s "$RUNNER_TEMP/errors.txt" ]; then
+            cat "$RUNNER_TEMP/errors.txt"
+            exit 1
+          fi
+          echo "build_linux of Otzaria/otzaria@$sha is still what the index build replays."
+
+      - name: Open or update the drift issue
+        if: failure() && steps.check.outputs.sha != ''
+        env:
+          SHA: ${{ steps.check.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "The next library index build will fail: build_linux of Otzaria/otzaria@\`${SHA:0:12}\` no longer passes \`.github/scripts/extract_app_build_steps.py\`."
+            echo
+            echo '```'
+            sed 's/^::error:://' "$RUNNER_TEMP/errors.txt"
+            echo '```'
+            echo
+            echo "Fix the extractor's pins (\`--fingerprints\` prints the new run fingerprints) before Thursday's release. Run: $RUN_URL"
+          } > "$RUNNER_TEMP/body.md"
+          number="$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$ISSUE_TITLE\" in:title" \
+            --json number,title --jq "map(select(.title == \"$ISSUE_TITLE\"))[0].number // empty")"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" -R "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body-file "$RUNNER_TEMP/body.md"
+          fi
+
+      - name: Close the drift issue
+        if: success()
+        env:
+          SHA: ${{ steps.check.outputs.sha }}
+        run: |
+          set -euo pipefail
+          number="$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$ISSUE_TITLE\" in:title" \
+            --json number,title --jq "map(select(.title == \"$ISSUE_TITLE\"))[0].number // empty")"
+          if [ -n "$number" ]; then
+            gh issue close "$number" -R "$GITHUB_REPOSITORY" \
+              --comment "build_linux of Otzaria/otzaria@\`${SHA:0:12}\` passes again."
+          fi
