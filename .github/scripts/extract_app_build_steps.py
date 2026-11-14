@@ -37,18 +37,22 @@ MIRRORED_RUN = {
     "Install Linux build dependencies": "afad8660067a7909e955667c2cabd3782c2a5f889664f1bdc1604fa5daaa11cc",
     "Find and prepare Linux packages": "21a48f84f5ae62a1db74bf93c6d9f81ab22f3cbcb80a5fd993ba76586c50c7b1",
 }
+# The index build runs neither checkout nor flutter-action, so their releases (`@ref`) and the
+# Flutter cache are free to move; Rust's `@stable` names the toolchain itself and stays pinned.
 MIRRORED_USES = {
     "Clone repository": {
-        "uses": "actions/checkout@v7.0.1",
+        "uses": "actions/checkout",
         "with": {"ref": "${{ needs.bump_version.outputs.sha }}"},
     },
     "Set up Flutter": {
         "if": "matrix.arch != 'aarch64'",
-        "uses": "subosito/flutter-action@v2",
-        "with": {"channel": "stable", "flutter-version": "3.47.7", "cache": True},
+        "uses": "subosito/flutter-action",
+        "with": {"channel": "stable", "flutter-version": "3.47.7"},
     },
     "Install Rust (stable) with rustup": {"uses": "dtolnay/rust-toolchain@stable"},
 }
+UNPINNED_ACTION_REF = {"Clone repository", "Set up Flutter"}
+FLUTTER_CACHE_INPUTS = {"cache", "cache-key", "cache-path", "pub-cache-key", "pub-cache-path"}
 
 # The comment-free run of FLUTTER_BUILD; the index build runs it once.
 FLUTTER_BUILD_RUN = """set -eo pipefail
@@ -249,6 +253,11 @@ def check_structure(job):
 def check_mirrored(steps, arch):
     for name, expected in MIRRORED_USES.items():
         found = {k: v for k, v in steps[name].items() if k != "name"}
+        if name in UNPINNED_ACTION_REF:
+            found["uses"] = str(found.get("uses", "")).split("@", 1)[0]
+        if name == "Set up Flutter":
+            found["with"] = {k: v for k, v in (found.get("with") or {}).items()
+                             if k not in FLUTTER_CACHE_INPUTS}
         if found != expected:
             fail(f"step '{name}' changed: {found}")
     for name, expected in MIRRORED_RUN.items():

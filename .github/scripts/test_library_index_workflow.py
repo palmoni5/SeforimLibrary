@@ -444,7 +444,12 @@ sys.exit(1)
         steps = []
         for name, role in x.STEPS:
             if name in x.MIRRORED_USES:
-                steps.append(dict(x.MIRRORED_USES[name], name=name))
+                step = json.loads(json.dumps(x.MIRRORED_USES[name]))
+                if name in x.UNPINNED_ACTION_REF:
+                    step["uses"] += "@v2"
+                if name == "Set up Flutter":
+                    step["with"]["cache"] = True
+                steps.append(dict(step, name=name))
             elif name == x.FLUTTER_BUILD:
                 steps.append({"name": name, "shell": "bash", "env": dict(x.FLUTTER_BUILD_ENV),
                               "run": x.FLUTTER_BUILD_RUN + "\n"})
@@ -543,6 +548,16 @@ sys.exit(1)
                 WPE_RUNTIME_VERSION="9.9.8"),
             "an unpinned WPE digest": lambda c: step(c, x.WPE_DOWNLOAD)["env"].pop(
                 "WPE_RUNTIME_SHA256"),
+            "another Flutter channel": lambda c: step(c, "Set up Flutter")["with"].update(
+                channel="beta"),
+            "a Flutter from another source": lambda c: step(c, "Set up Flutter")["with"].update(
+                {"git-source": "https://example.com/flutter.git"}),
+            "another action for Flutter": lambda c: step(c, "Set up Flutter").update(
+                uses="someone/flutter-action@v2"),
+            "a checkout with submodules": lambda c: step(c, "Clone repository")["with"].update(
+                submodules=True),
+            "another Rust toolchain": lambda c: step(c, "Install Rust (stable) with rustup").update(
+                uses="dtolnay/rust-toolchain@1.80"),
         }
         for label, mutate in cases.items():
             self.assertEqual(drifted(mutate), 1, label)
@@ -559,6 +574,11 @@ sys.exit(1)
                 run="bash tool/ci/download.sh\n"),
             "a new WPE download env var": lambda c: step(c, x.WPE_DOWNLOAD)["env"].update(
                 GITHUB_TOKEN="${{ github.token }}"),
+            "a new flutter-action release": lambda c: step(c, "Set up Flutter").update(
+                uses="subosito/flutter-action@v3.1.0"),
+            "the Flutter cache off": lambda c: step(c, "Set up Flutter")["with"].update(cache=False),
+            "a new checkout release": lambda c: step(c, "Clone repository").update(
+                uses="actions/checkout@v8"),
             "anything after the raw bundle": lambda c: c["steps"].extend(
                 [{"name": "Later", "if": "steps.a.outputs.b == 'x'", "run": "x"},
                  {"name": "Later 2", "run": "x"}]),
