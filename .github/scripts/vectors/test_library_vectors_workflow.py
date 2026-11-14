@@ -132,6 +132,27 @@ class Workflow(unittest.TestCase):
     def test_a_mistyped_manual_tag_fails_instead_of_skipping(self):
         self.assertIn("::error::release_tag '$TAG' is not a database release tag", run_text(self.gate))
 
+    @unittest.skipIf(sys.platform == "win32" or not shutil.which("bash"), "needs a Linux bash")
+    def test_a_failed_index_build_fails_the_gate_and_a_cancelled_one_skips_it(self):
+        def gate(conclusion):
+            with tempfile.TemporaryDirectory() as d:
+                out = Path(d) / "out"
+                env = {**os.environ, "GITHUB_OUTPUT": str(out), "EVENT": "workflow_run",
+                       "RUN_CONCLUSION": conclusion, "RUN_TITLE": f"library-index {TAG}",
+                       "RUN_URL": "https://example/run/1", "PUBLISH": "true"}
+                p = subprocess.run(["bash", "-c", run_text(self.gate)], env=env, capture_output=True, text=True)
+                return p.returncode, p.stdout, out.read_text() if out.exists() else ""
+
+        for conclusion in ("failure", "timed_out"):
+            code, log, _ = gate(conclusion)
+            self.assertEqual(code, 1, conclusion)
+            self.assertIn(f"::error::The index build https://example/run/1 concluded '{conclusion}'", log)
+        for conclusion in ("cancelled", "skipped"):
+            code, _, output = gate(conclusion)
+            self.assertEqual(code, 0, conclusion)
+            self.assertIn("proceed=false", output)
+        self.assertEqual(self.gate["steps"][0]["env"]["RUN_URL"], "${{ github.event.workflow_run.html_url }}")
+
     def test_publishing_is_opt_in(self):
         gate = run_text(self.gate)
         self.assertIn("MODE=dry-run", gate)

@@ -86,6 +86,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_TITLE: ${{ github.event.workflow_run.display_title }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
           INPUT_TAG: ${{ inputs.release_tag }}
           INPUT_MODE: ${{ inputs.mode }}
           PUBLISH: ${{ vars.LIBRARY_VECTORS_PUBLISH }}
@@ -99,6 +100,11 @@ jobs:
               exit 1
             fi
           else
+            if [ "$RUN_CONCLUSION" = failure ] || [ "$RUN_CONCLUSION" = timed_out ]; then
+              # Red, not a quiet skip: otherwise the release silently ships without vectors.
+              echo "::error::The index build $RUN_URL concluded '$RUN_CONCLUSION' — no vectors without a stored index. Rerun the index build; the vectors follow it."
+              exit 1
+            fi
             if [ "$RUN_CONCLUSION" != success ]; then
               echo "The index build concluded '$RUN_CONCLUSION' — no vectors without a stored index."
               echo "proceed=false" >> "$GITHUB_OUTPUT"; exit 0
